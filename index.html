@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>太鼓節奏拍拍 - 坐標修正 AI 動作感應版</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            background-color: #0d0d11;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: #fff;
+        }
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 950px;
+            height: 550px;
+            background: #000;
+            border: 6px solid #44445c;
+            border-radius: 32px;
+            overflow: hidden;
+            box-shadow: 0 25px 60px rgba(0,0,0,0.8);
+        }
+        
+        /* 鏡像翻轉視訊背景 */
+        #webcam {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            z-index: 0;
+            opacity: 0.6;
+        }
+        
+        /* 隱藏的計算畫布 */
+        #motion-canvas { display: none; }
+        
+        /* 視覺除錯專用畫布：覆蓋在判定框上，顯示 AI 偵測到的動態點 */
+        #debug-canvas {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 3;
+        }
+
+        #game-play-area { position: absolute; top: 0; bottom: 0; left: 0; right: 0; z-index: 1; }
+
+        /* 雙側判定線 */
+        .j-line {
+            position: absolute;
+            top: 0; bottom: 0; width: 8px;
+            background: linear-gradient(to bottom, rgba(255,255,255,0.2), #fff, rgba(255,255,255,0.2));
+            z-index: 2; opacity: 0.2;
+        }
+        #j-line-left { left: 160px; }
+        #j-line-right { right: 160px; }
+        .j-line.active { opacity: 1; box-shadow: 0 0 25px #00ffff; }
+
+        /* 巨型空心判定框 (140px) */
+        #judgment-box {
+            position: absolute;
+            top: 50%; width: 140px; height: 140px;
+            border: 7px solid #ffcc00; border-radius: 50%;
+            background: rgba(255, 204, 0, 0.1);
+            box-shadow: 0 0 30px rgba(255, 204, 0, 0.4);
+            z-index: 3; transform: translateY(-50%);
+            transition: top 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.1), left 0.3s, right 0.3s;
+        }
+        
+        /* 110px 巨型音符 */
+        .note {
+            position: absolute;
+            width: 110px; height: 110px;
+            border: 5px solid #fff; border-radius: 50%;
+            z-index: 4; transform: translateY(-50%);
+        }
+        .note.lane-0 { background: radial-gradient(circle, #ff6699 30%, #cc0044 100%); box-shadow: 0 0 30px #ff0044; }
+        .note.lane-1 { background: radial-gradient(circle, #33eeff 30%, #0066cc 100%); box-shadow: 0 0 30px #0066cc; }
+        .note.lane-2 { background: radial-gradient(circle, #ffbb33 30%, #cc6600 100%); box-shadow: 0 0 30px #cc6600; }
+
+        /* 頂部指令大字 */
+        #hand-instruction-overlay {
+            position: absolute;
+            top: 25px; left: 50%; transform: translateX(-50%);
+            font-size: 34px; font-weight: 900; padding: 12px 45px; border-radius: 20px;
+            text-align: center; z-index: 6; box-shadow: 0 5px 15px rgba(0,0,0,0.6);
+            animation: pulse 1s infinite alternate;
+        }
+        .hand-left { background-color: #e91e63; color: white; }
+        .hand-right { background-color: #2196f3; color: white; }
+        @keyframes pulse { 0% { transform: translateX(-50%) scale(0.96); } 100% { transform: translateX(-50%) scale(1.04); } }
+
+        /* UI 與數據 */
+        #ui-layer {
+            position: absolute; bottom: 25px; left: 40px; right: 40px;
+            display: flex; justify-content: space-between; align-items: center;
+            z-index: 5; pointer-events: none;
+        }
+        .info-box {
+            background: rgba(0, 0, 0, 0.85); padding: 12px 24px; border-radius: 30px;
+            border: 2px solid #554477; font-size: 20px; font-weight: bold;
+        }
+        #praise-text {
+            color: #00ffcc; font-size: 44px; font-weight: bold; text-shadow: 0 0 25px #00ffcc;
+            opacity: 0; transform: scale(0.5); transition: all 0.1s ease;
+        }
+        #praise-text.show { opacity: 1; transform: scale(1); }
+
+        #camera-prompt {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(15,15,25,0.98); z-index: 100;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            gap: 20px; padding: 40px; text-align: center;
+        }
+        .start-btn {
+            background: #4caf50; color: white; border: none; padding: 18px 40px;
+            border-radius: 15px; font-size: 24px; font-weight: bold; cursor: pointer;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+        }
+
+        .ripple {
+            position: absolute; width: 140px; height: 140px; border-radius: 50%;
+            animation: ripple-out 0.35s ease-out forwards; z-index: 1;
+        }
+        @keyframes ripple-out {
+            0% { transform: translateY(-50%) scale(1); opacity: 1; border-width: 8px; }
+            100% { transform: translateY(-50%) scale(1.8); opacity: 0; border-width: 1px; }
+        }
+        #switch-flash {
+            position: absolute; top:0; bottom:0; left:0; right:0;
+            background: rgba(255,255,255,0); pointer-events: none; z-index: 9;
+            transition: background 0.15s ease;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="camera-prompt">
+        <h2 style="font-size: 32px; color: #ffcc00;">✋ AI 太鼓節奏拍拍 (坐標修正版)</h2>
+        <p style="font-size: 18px; color: #ccc; max-width: 600px; line-height: 1.6;">
+            此版本已重構底層 AI 區域對齊算法，解決了 UI 造成的上下位移問題。<br>
+            當揮手被 AI 捕捉到時，黃色圓框內會即時出現<span style="color:#00ffcc; font-weight:bold;">發光綠點</span>提示！
+        </p>
+        <button class="start-btn" onclick="initGame()">授權鏡頭並開始訓練 🎥</button>
+    </div>
+
+    <div id="switch-flash"></div>
+    <video id="webcam" autoplay playsinline muted></video>
+    
+    <canvas id="motion-canvas"></canvas>
+    <canvas id="debug-canvas"></canvas>
+
+    <div id="j-line-left" class="j-line"></div>
+    <div id="j-line-right" class="j-line"></div>
+
+    <div id="game-play-area">
+        <div id="judgment-box"></div>
+        <div id="notes-container"></div>
+        <div id="effect-container"></div>
+    </div>
+
+    <div id="hand-instruction-overlay" class="hand-right">✋ 請用【右手】大範圍揮動！➔</div>
+
+    <div id="ui-layer">
+        <div class="info-box">
+            <span>總得分：<span id="score" style="color:#ffcc00">0</span></span>
+            <span> | 本手擊中：<span id="hand-count" style="color:#00ffff">0</span> / 10</span>
+        </div>
+        <div id="praise-text">好球！</div>
+    </div>
+</div>
+
+<script>
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('motion-canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const debugCanvas = document.getElementById('debug-canvas');
+    const dctx = debugCanvas.getContext('2d');
+    
+    const playArea = document.getElementById('game-play-area');
+    const notesContainer = document.getElementById('notes-container');
+    const effectContainer = document.getElementById('effect-container');
+    const scoreElement = document.getElementById('score');
+    const handCountElement = document.getElementById('hand-count');
+    const handOverlay = document.getElementById('hand-instruction-overlay');
+    const praiseText = document.getElementById('praise-text');
+    const judgmentBox = document.getElementById('judgment-box');
+    const gameContainer = document.getElementById('game-container');
+    const lineLeft = document.getElementById('j-line-left');
+    const lineRight = document.getElementById('j-line-right');
+    const flashEffect = document.getElementById('switch-flash');
+
+    let score = 0;
+    let handHits = 0;
+    let currentHand = 'right'; 
+    let currentNotes = [];
+    
+    let baseSpeed = 2.4;
+    let currentSpeed = baseSpeed;
+    let combo = 0;
+
+    const lanes = [25, 50, 75]; 
+    const praises = ["神準揮擊！✋", "抓到節奏了！", "動作很棒！", "太厲害了！", "身手矯健！"];
+
+    let prevFrameData = null;
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    
+    function playDrumSound(isSwitch) {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        if (isSwitch) {
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(320, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(640, audioCtx.currentTime + 0.3);
+            gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+        } else {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(130, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(35, audioCtx.currentTime + 0.25);
+            gain.gain.setValueAtTime(0.8, audioCtx.currentTime);
+        }
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.3);
+    }
+
+    async function initGame() {
+        document.getElementById('camera-prompt').style.display = 'none';
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+                audio: false
+            });
+            video.srcObject = stream;
+            
+            video.addEventListener('loadedmetadata', () => {
+                // 設定底層高速運算畫布
+                canvas.width = 160;
+                canvas.height = 120;
+                
+                // 設定上層Debug顯示畫布尺寸與容器一致
+                debugCanvas.width = gameContainer.clientWidth;
+                debugCanvas.height = gameContainer.clientHeight;
+
+                function updateLoop() {
+                    detectMotion();
+                    requestAnimationFrame(updateLoop);
+                }
+                requestAnimationFrame(updateLoop);
+
+                setInterval(spawnNote, 2400);
+                setTimeout(spawnNote, 400);
+            });
+        } catch (err) {
+            alert("相機開啟失敗，已切換成備用手動打擊模式。");
+            setInterval(spawnNote, 2400);
+        }
+    }
+
+    // 手動備用點擊
+    playArea.addEventListener('pointerdown', () => { triggerHitSuccess(true); });
+
+    function updateHandLayout() {
+        if (currentHand === 'right') {
+            lineRight.classList.add('active');
+            lineLeft.classList.remove('active');
+            judgmentBox.style.left = 'auto';
+            judgmentBox.style.right = '90px'; 
+            handOverlay.className = 'hand-right';
+            handOverlay.textContent = '✋ 請用【右手】大範圍揮動！➔';
+        } else {
+            lineLeft.classList.add('active');
+            lineRight.classList.remove('active');
+            judgmentBox.style.right = 'auto';
+            judgmentBox.style.left = '90px'; 
+            handOverlay.className = 'hand-left';
+            handOverlay.textContent = '← ✋ 請用【左手】大範圍揮動！';
+        }
+        handCountElement.textContent = handHits;
+    }
+
+    updateHandLayout();
+
+    function switchHand() {
+        currentHand = (currentHand === 'right') ? 'left' : 'right';
+        handHits = 0;
+        playDrumSound(true);
+        flashEffect.style.background = 'rgba(255, 255, 255, 0.4)';
+        setTimeout(() => flashEffect.style.background = 'rgba(255, 255, 255, 0)', 150);
+        updateHandLayout();
+        notesContainer.innerHTML = '';
+        currentNotes = [];
+    }
+
+    function spawnNote() {
+        const note = document.createElement('div');
+        let laneIndex = Math.floor(Math.random() * 3);
+        note.className = `note lane-${laneIndex}`;
+        note.style.top = lanes[laneIndex] + '%';
+        notesContainer.appendChild(note);
+
+        let posX, targetX;
+        
+        if (currentHand === 'right') {
+            posX = -130;
+            targetX = playArea.clientWidth - 160 - 55; 
+        } else {
+            posX = playArea.clientWidth + 20;
+            targetX = 160 - 55;
+        }
+        note.style.left = posX + 'px';
+
+        if (currentNotes.length === 0) {
+            judgmentBox.style.top = lanes[laneIndex] + '%';
+        }
+
+        function move() {
+            if (!note.parentElement) return;
+            if (currentHand === 'right') {
+                posX += currentSpeed;
+                note.style.left = posX + 'px';
+                if (posX > playArea.clientWidth) { destroyNote(note); }
+                else { requestAnimationFrame(move); }
+            } else {
+                posX -= currentSpeed;
+                note.style.left = posX + 'px';
+                if (posX < -140) { destroyNote(note); }
+                else { requestAnimationFrame(move); }
+            }
+        }
+        
+        function destroyNote(n) {
+            n.remove();
+            currentNotes = currentNotes.filter(item => item.element !== n);
+            if (combo > 0) { combo = 0; currentSpeed = baseSpeed; }
+            if (currentNotes.length > 0) { judgmentBox.style.top = lanes[currentNotes[0].lane] + '%'; }
+        }
+
+        requestAnimationFrame(move);
+        currentNotes.push({ element: note, getX: () => posX, targetX: targetX, lane: laneIndex });
+    }
+
+    // 【重構核心】精確坐標對齊演算法
+    function detectMotion() {
+        if (video.readyState !== video.HAVE_CURRENT_DATA) return;
+        
+        try {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const currentFrame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = currentFrame.data;
+
+            // 清除上一影格的 Debug 畫面
+            dctx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+
+            if (prevFrameData) {
+                // 1. 抓取判定框在真實螢幕網頁中的絕對坐標
+                const boxRect = judgmentBox.getBoundingClientRect();
+                const containerRect = gameContainer.getBoundingClientRect();
+                
+                // 2. 計算判定框相對於遊戲容器的精確比例 (排除上下UI邊界干擾)
+                const relLeft = boxRect.left - containerRect.left;
+                const relTop = boxRect.top - containerRect.top;
+                
+                const normLeft = relLeft / containerRect.width;
+                const normTop = relTop / containerRect.height;
+                const normWidth = boxRect.width / containerRect.width;
+                const normHeight = boxRect.height / containerRect.height;
+
+                // 3. 轉化為 AI 計算畫布 (160x120) 的精確像素坐標 (帶有相機鏡像翻轉修正)
+                const cLeft = Math.floor((1 - (normLeft + normWidth)) * canvas.width);
+                const cTop = Math.floor(normTop * canvas.height);
+                const cWidth = Math.floor(normWidth * canvas.width);
+                const cHeight = Math.floor(normHeight * canvas.height);
+
+                let motionPixels = 0;
+                let totalPixels = 0;
+
+                // 4. 只精準比對該範圍
+                for (let y = cTop; y < cTop + cHeight; y++) {
+                    for (let x = cLeft; x < cLeft + cWidth; x++) {
+                        if (x < 0 || x >= canvas.width || y < 0 || y >= canvas.height) continue;
+                        
+                        totalPixels++;
+                        const idx = (y * canvas.width + x) * 4;
+                        
+                        const rDiff = Math.abs(data[idx] - prevFrameData[idx]);
+                        const gDiff = Math.abs(data[idx+1] - prevFrameData[idx+1]);
+                        const bDiff = Math.abs(data[idx+2] - prevFrameData[idx+2]);
+                        
+                        if (rDiff + gDiff + bDiff > 40) {
+                            motionPixels++;
+
+                            // 【除錯亮點】在畫面上同步繪製出被偵測到的動態點（鏡像翻轉還原回來顯示）
+                            const screenX = (1 - (x / canvas.width)) * debugCanvas.width;
+                            const screenY = (y / canvas.height) * debugCanvas.height;
+                            
+                            dctx.fillStyle = 'rgba(0, 255, 200, 0.6)';
+                            dctx.fillRect(screenX, screenY, 4, 4);
+                        }
+                    }
+                }
+
+                const motionRatio = totalPixels > 0 ? (motionPixels / totalPixels) : 0;
+
+                // 只要框格內有 1.8% 以上的像素變動，即刻判定拍擊成功
+                if (motionRatio > 0.018) {
+                    triggerHitSuccess(false);
+                }
+            }
+            prevFrameData = data;
+        } catch (e) {
+            // 異常安全攔截
+        }
+    }
+
+    // 每 2 秒重置底噪，防止環境背景干擾
+    setInterval(() => { prevFrameData = null; }, 2000);
+
+    function triggerHitSuccess(isManualClick) {
+        if (currentNotes.length === 0) return;
+
+        let closestNote = currentNotes[0];
+        let hitWindow = 95; 
+        let distance = Math.abs(closestNote.getX() - closestNote.targetX);
+
+        if (isManualClick || (distance <= hitWindow)) {
+            score++;
+            handHits++;
+            combo++;
+            
+            currentSpeed = baseSpeed + (Math.min(combo, 12) * 0.18);
+            scoreElement.textContent = score;
+            handCountElement.textContent = handHits;
+
+            playDrumSound(false);
+            if (navigator.vibrate) navigator.vibrate(60);
+
+            judgmentBox.style.transform = 'translateY(-50%) scale(1.3)';
+            setTimeout(() => judgmentBox.style.transform = 'translateY(-50%) scale(1)', 80);
+            
+            const ripple = document.createElement('div');
+            ripple.className = 'ripple';
+            ripple.style.top = lanes[closestNote.lane] + '%';
+            if (currentHand === 'right') ripple.style.right = '90px';
+            else ripple.style.left = '90px';
+            ripple.style.border = `6px solid ${closestNote.lane === 0 ? '#ff0044' : closestNote.lane === 1 ? '#0066cc' : '#cc6600'}`;
+            effectContainer.appendChild(ripple);
+            setTimeout(() => ripple.remove(), 350);
+
+            praiseText.textContent = praises[Math.floor(Math.random() * praises.length)];
+            praiseText.classList.add('show');
+            setTimeout(() => praiseText.classList.remove('show'), 500);
+
+            closestNote.element.remove();
+            currentNotes.shift();
+
+            if (handHits >= 10) {
+                switchHand();
+            } else if (currentNotes.length > 0) {
+                judgmentBox.style.top = lanes[currentNotes[0].lane] + '%';
+            }
+        }
+    }
+</script>
+
+</body>
+</html>
